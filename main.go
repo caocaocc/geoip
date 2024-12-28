@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net"
@@ -91,7 +92,6 @@ func parse(binary []byte) (metadata maxminddb.Metadata, countryMap map[string][]
 		if err != nil {
 			return
 		}
-		// idk why
 		code := strings.ToLower(country.RegisteredCountry.IsoCode)
 		countryMap[code] = append(countryMap[code], ipNet)
 	}
@@ -101,31 +101,13 @@ func parse(binary []byte) (metadata maxminddb.Metadata, countryMap map[string][]
 
 func newWriter(metadata maxminddb.Metadata, codes []string) (*mmdbwriter.Tree, error) {
 	return mmdbwriter.New(mmdbwriter.Options{
-		DatabaseType:            "sing-geoip",
+		DatabaseType:            "geoip",
 		Languages:               codes,
 		IPVersion:               int(metadata.IPVersion),
 		RecordSize:              int(metadata.RecordSize),
 		Inserter:                inserter.ReplaceWith,
 		DisableIPv4Aliasing:     true,
 		IncludeReservedNetworks: true,
-	})
-}
-
-func open(path string, codes []string) (*mmdbwriter.Tree, error) {
-	reader, err := maxminddb.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	if reader.Metadata.DatabaseType != "sing-geoip" {
-		return nil, E.New("invalid sing-geoip database")
-	}
-	reader.Close()
-
-	return mmdbwriter.Load(path, mmdbwriter.Options{
-		Languages: append(reader.Metadata.Languages, common.Filter(codes, func(it string) bool {
-			return !common.Contains(reader.Metadata.Languages, it)
-		})...),
-		Inserter: inserter.ReplaceWith,
 	})
 }
 
@@ -161,6 +143,78 @@ func write(writer *mmdbwriter.Tree, dataMap map[string][]*net.IPNet, output stri
 	return err
 }
 
+func fetchChinaIPCIDR() ([]*net.IPNet, error) {
+	urls := []string{
+		"https://raw.githubusercontent.com/misakaio/chnroutes2/master/chnroutes.txt",
+		"https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china6.txt",
+	}
+
+	var allCIDRs []*net.IPNet
+
+	for _, url := range urls {
+		resp, err := http.Get(url)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line != "" && !strings.HasPrefix(line, "#") {
+				_, ipNet, err := net.ParseCIDR(line)
+				if err != nil {
+					log.Warn("Invalid CIDR:", line)
+					continue
+				}
+				allCIDRs = append(allCIDRs, ipNet)
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	return allCIDRs, nil
+}
+
+func writeCIDRsToFile(cidrs []*net.IPNet, outputDir string, countryCode string, format string) error {
+	fileName := "geoip-" + countryCode + "." + format
+	filePath, _ := filepath.Abs(filepath.Join(outputDir, fileName))
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+
+	switch format {
+	case "txt":
+		for _, cidr := range cidrs {
+			writer.WriteString(cidr.String() + "\n")
+		}
+	case "list":
+		for _, cidr := range cidrs {
+			if cidr.IP.To4() != nil {
+				writer.WriteString("IP-CIDR," + cidr.String() + "\n")
+			} else {
+				writer.WriteString("IP-CIDR6," + cidr.String() + "\n")
+			}
+		}
+	case "yaml":
+		writer.WriteString("payload:\n")
+		for _, cidr := range cidrs {
+			writer.WriteString("  - " + cidr.String() + "\n")
+		}
+	}
+
+	log.Info("write ", filePath)
+	return nil
+}
+
 func release(source string, destination string, output string, ruleSetOutput string) error {
 	sourceRelease, err := fetch(source)
 	if err != nil {
@@ -184,6 +238,16 @@ func release(source string, destination string, output string, ruleSetOutput str
 	if err != nil {
 		return err
 	}
+
+	// Fetch China IPCIDR from specified URLs
+	chinaCIDRs, err := fetchChinaIPCIDR()
+	if err != nil {
+		return err
+	}
+
+	// Replace the original China IPCIDR with the new one
+	countryMap["cn"] = chinaCIDRs
+
 	allCodes := make([]string, 0, len(countryMap))
 	for code := range countryMap {
 		allCodes = append(allCodes, code)
@@ -212,6 +276,7 @@ func release(source string, destination string, output string, ruleSetOutput str
 	if err != nil {
 		return err
 	}
+
 	for countryCode, ipNets := range countryMap {
 		var headlessRule option.DefaultHeadlessRule
 		headlessRule.IPCIDR = make([]string, 0, len(ipNets))
@@ -225,8 +290,10 @@ func release(source string, destination string, output string, ruleSetOutput str
 				DefaultOptions: headlessRule,
 			},
 		}
+
+		// Generate SRS file
 		srsPath, _ := filepath.Abs(filepath.Join(ruleSetOutput, "geoip-"+countryCode+".srs"))
-		os.Stderr.WriteString("write " + srsPath + "\n")
+		log.Info("write ", srsPath)
 		outputRuleSet, err := os.Create(srsPath)
 		if err != nil {
 			return err
@@ -237,6 +304,14 @@ func release(source string, destination string, output string, ruleSetOutput str
 			return err
 		}
 		outputRuleSet.Close()
+
+		// Generate additional file formats
+		for _, format := range []string{"txt", "list", "yaml"} {
+			err = writeCIDRsToFile(ipNets, ruleSetOutput, countryCode, format)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	setActionOutput("tag", *sourceRelease.Name)
@@ -248,7 +323,7 @@ func setActionOutput(name string, content string) {
 }
 
 func main() {
-	err := release("Dreamacro/maxmind-geoip", "sagernet/sing-geoip", "geoip.db", "rule-set")
+	err := release("Dreamacro/maxmind-geoip", "caocaocc/geoip", "geoip.db", "rule-set")
 	if err != nil {
 		log.Fatal(err)
 	}
