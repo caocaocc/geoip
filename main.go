@@ -210,6 +210,14 @@ func writeCIDRsToFile(cidrs []*net.IPNet, outputDir string, countryCode string, 
 			writer.WriteString("  - " + cidr.String() + "\n")
 		}
 	}
+	case "snippet":
+	for _, cidr := range cidrs {
+		if cidr.IP.To4() != nil {
+			writer.WriteString("ip-cidr, " + cidr.String() + "\n")
+		} else {
+			writer.WriteString("ip6-cidr, " + cidr.String() + "\n")
+		}
+	}
 
 	log.Info("write ", filePath)
 	return nil
@@ -306,7 +314,7 @@ func release(source string, destination string, output string, ruleSetOutput str
 		outputRuleSet.Close()
 
 		// Generate additional file formats
-		for _, format := range []string{"txt", "list", "yaml"} {
+		for _, format := range []string{"txt", "list", "yaml", "snippet"} {
 			err = writeCIDRsToFile(ipNets, ruleSetOutput, countryCode, format)
 			if err != nil {
 				return err
