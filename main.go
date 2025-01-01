@@ -209,7 +209,6 @@ func writeCIDRsToFile(cidrs []*net.IPNet, outputDir string, countryCode string, 
 		for _, cidr := range cidrs {
 			writer.WriteString("  - " + cidr.String() + "\n")
 		}
-	}
 	case "snippet":
 		for _, cidr := range cidrs {
 			if cidr.IP.To4() != nil {
