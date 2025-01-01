@@ -217,6 +217,7 @@ func writeCIDRsToFile(cidrs []*net.IPNet, outputDir string, countryCode string, 
 			} else {
 				writer.WriteString("ip6-cidr, " + cidr.String() + "\n")
 			}
+		}
 	}
 
 	log.Info("write ", filePath)
