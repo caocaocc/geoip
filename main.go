@@ -212,9 +212,9 @@ func writeCIDRsToFile(cidrs []*net.IPNet, outputDir string, countryCode string, 
 	case "snippet":
 		for _, cidr := range cidrs {
 			if cidr.IP.To4() != nil {
-				writer.WriteString("ip-cidr, " + cidr.String() + "\n")
+				writer.WriteString("ip-cidr, " + cidr.String() + ", proxy" + "\n")
 			} else {
-				writer.WriteString("ip6-cidr, " + cidr.String() + "\n")
+				writer.WriteString("ip6-cidr, " + cidr.String() + ", proxy" + "\n")
 			}
 		}
 	}
